@@ -62,24 +62,36 @@ jobs:
     needs: build
     steps:
       - name: Configure SSH key
+        env:
+          WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
+          test -n "$EC2_SSH_KEY" || { echo "EC2_SSH_KEY is not set"; exit 1; }
+          test -n "$WEB_SERVER_IP" || { echo "WEB_SERVER_IP is not set (add as secret or variable)"; exit 1; }
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/lamp-key.pem
+          echo "$EC2_SSH_KEY" > ~/.ssh/lamp-key.pem
           chmod 600 ~/.ssh/lamp-key.pem
-          ssh-keyscan -H "${{ secrets.WEB_SERVER_IP }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 10 -H "$WEB_SERVER_IP" >> ~/.ssh/known_hosts || true
 
       - name: Deploy application container
         env:
-          EC2_USER: ${{ vars.EC2_USER }}
-          WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP }}
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          EC2_USER: ${{ vars.EC2_USER != '' && vars.EC2_USER || secrets.EC2_USER }}
+          WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
+          DB_HOST: ${{ secrets.DB_HOST != '' && secrets.DB_HOST || vars.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME != '' && secrets.DB_NAME || vars.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER != '' && secrets.DB_USER || vars.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD != '' && secrets.DB_PASSWORD || vars.DB_PASSWORD }}
           DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          ssh -i ~/.ssh/lamp-key.pem "$EC2_USER@$WEB_SERVER_IP" <<EOF
+          test -n "$EC2_USER" || { echo "EC2_USER is not set"; exit 1; }
+          test -n "$WEB_SERVER_IP" || { echo "WEB_SERVER_IP is not set"; exit 1; }
+          test -n "$DB_HOST" || { echo "DB_HOST is not set"; exit 1; }
+          test -n "$DB_NAME" || { echo "DB_NAME is not set"; exit 1; }
+          test -n "$DB_USER" || { echo "DB_USER is not set"; exit 1; }
+          test -n "$DB_PASSWORD" || { echo "DB_PASSWORD is not set"; exit 1; }
+
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/lamp-key.pem "$EC2_USER@$WEB_SERVER_IP" <<EOF
             set -euxo pipefail
 
             echo "$DOCKERHUB_TOKEN" | sudo docker login -u "$DOCKERHUB_USERNAME" --password-stdin
