@@ -6,3 +6,5 @@ crash.log
 *.tfvars
 *.tfvars.json
 lamp-key.pem
+__pycache__/
+*.py[cod]

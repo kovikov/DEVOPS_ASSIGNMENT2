@@ -32,6 +32,26 @@ Create repository variable:
 
 - `EC2_USER=ubuntu`
 
+## Fast Setup with GitHub CLI (Optional)
+
+Use the helper script in this repo:
+
+```powershell
+pwsh ./scripts/set-github-secrets.ps1 \
+   -Repo "kovikov/DEVOPS_ASSIGNMENT2" \
+   -DockerhubUsername "YOUR_DOCKERHUB_USERNAME" \
+   -DockerhubToken "YOUR_DOCKERHUB_TOKEN" \
+   -WebServerIp "YOUR_WEB_SERVER_PUBLIC_IP" \
+   -DbHost "YOUR_DB_PRIVATE_IP" \
+   -DbPassword "YOUR_DB_PASSWORD" \
+   -KeyPath "./lamp-key.pem"
+```
+
+Prerequisites:
+
+- Install GitHub CLI (`gh`)
+- Authenticate once: `gh auth login`
+
 ## Trigger Deployment
 
 ```bash
