@@ -156,8 +156,21 @@ jobs:
       USE_SSM_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.use_ssm_deploy || vars.USE_SSM_DEPLOY || 'false' }}
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'us-east-1' }}
     steps:
+      - name: Resolve deploy mode
+        id: deploy_mode
+        env:
+          WEB_SERVER_INSTANCE_ID: ${{ secrets.WEB_SERVER_INSTANCE_ID != '' && secrets.WEB_SERVER_INSTANCE_ID || vars.WEB_SERVER_INSTANCE_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [ "$USE_SSM_DEPLOY" = "true" ] && [ -n "$WEB_SERVER_INSTANCE_ID" ] && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "ssm_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ssm_ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure AWS credentials (SSM mode)
-        if: env.USE_SSM_DEPLOY == 'true'
+        if: steps.deploy_mode.outputs.ssm_ready == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
@@ -166,7 +179,7 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
 
       - name: Deploy application container via SSM
-        if: env.USE_SSM_DEPLOY == 'true'
+        if: steps.deploy_mode.outputs.ssm_ready == 'true'
         env:
           WEB_SERVER_INSTANCE_ID: ${{ secrets.WEB_SERVER_INSTANCE_ID != '' && secrets.WEB_SERVER_INSTANCE_ID || vars.WEB_SERVER_INSTANCE_ID }}
           DB_HOST: ${{ secrets.DB_HOST != '' && secrets.DB_HOST || vars.DB_HOST }}
@@ -261,8 +274,14 @@ jobs:
             exit 1
           fi
 
+      - name: Fallback notice (SSM not ready)
+        if: env.USE_SSM_DEPLOY == 'true' && steps.deploy_mode.outputs.ssm_ready != 'true'
+        run: |
+          echo "USE_SSM_DEPLOY=true but required SSM secrets/instance id are missing. Falling back to SSH deploy path."
+          echo "Required: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, WEB_SERVER_INSTANCE_ID"
+
       - name: Configure SSH key
-        if: env.USE_SSM_DEPLOY != 'true'
+        if: steps.deploy_mode.outputs.ssm_ready != 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -275,7 +294,7 @@ jobs:
           ssh-keyscan -T 10 -H "$WEB_SERVER_IP" >> ~/.ssh/known_hosts || true
 
       - name: Check SSH reachability
-        if: env.USE_SSM_DEPLOY != 'true'
+        if: steps.deploy_mode.outputs.ssm_ready != 'true'
         id: ssh_check
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
@@ -287,7 +306,7 @@ jobs:
           fi
 
       - name: Deploy application container
-        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable == 'true'
+        if: steps.deploy_mode.outputs.ssm_ready != 'true' && steps.ssh_check.outputs.reachable == 'true'
         env:
           EC2_USER: ${{ vars.EC2_USER != '' && vars.EC2_USER || secrets.EC2_USER }}
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
@@ -358,7 +377,7 @@ jobs:
           EOF
 
       - name: Skip deploy (SSH unreachable)
-        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY != 'true'
+        if: steps.deploy_mode.outputs.ssm_ready != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY != 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
         run: |
@@ -366,7 +385,7 @@ jobs:
           echo "Open inbound SSH on the web server security group for GitHub runner IPs or temporarily allow 0.0.0.0/0 on port 22, then rerun."
 
       - name: Fail deploy (SSH unreachable with force)
-        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY == 'true'
+        if: steps.deploy_mode.outputs.ssm_ready != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY == 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
         run: |
