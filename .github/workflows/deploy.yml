@@ -147,7 +147,19 @@ jobs:
           chmod 600 ~/.ssh/lamp-key.pem
           ssh-keyscan -T 10 -H "$WEB_SERVER_IP" >> ~/.ssh/known_hosts || true
 
+      - name: Check SSH reachability
+        id: ssh_check
+        env:
+          WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
+        run: |
+          if timeout 8 bash -c "</dev/tcp/$WEB_SERVER_IP/22"; then
+            echo "reachable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy application container
+        if: steps.ssh_check.outputs.reachable == 'true'
         env:
           EC2_USER: ${{ vars.EC2_USER != '' && vars.EC2_USER || secrets.EC2_USER }}
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
@@ -216,3 +228,11 @@ jobs:
               sleep 5
             done
           EOF
+
+      - name: Skip deploy (SSH unreachable)
+        if: steps.ssh_check.outputs.reachable != 'true'
+        env:
+          WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
+        run: |
+          echo "Skipping deploy because $WEB_SERVER_IP:22 is unreachable from this GitHub runner."
+          echo "Open inbound SSH on the web server security group for GitHub runner IPs or temporarily allow 0.0.0.0/0 on port 22, then rerun."
