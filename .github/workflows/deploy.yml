@@ -91,7 +91,7 @@ jobs:
           test -n "$DB_USER" || { echo "DB_USER is not set"; exit 1; }
           test -n "$DB_PASSWORD" || { echo "DB_PASSWORD is not set"; exit 1; }
 
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/lamp-key.pem "$EC2_USER@$WEB_SERVER_IP" <<EOF
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/lamp-key.pem "$EC2_USER@$WEB_SERVER_IP" <<EOF
             set -euxo pipefail
 
             echo "$DOCKERHUB_TOKEN" | sudo docker login -u "$DOCKERHUB_USERNAME" --password-stdin
