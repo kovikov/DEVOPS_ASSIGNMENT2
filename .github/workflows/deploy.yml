@@ -76,6 +76,8 @@ jobs:
       - name: Resolve image registry
         id: resolve_registry
         run: |
+          USE_DOCKERHUB="${{ vars.USE_DOCKERHUB }}"
+
           if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
             DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
           elif [ -n "${{ vars.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
@@ -84,7 +86,9 @@ jobs:
             DOCKERHUB_USERNAME=""
           fi
 
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+          if [ "$USE_DOCKERHUB" = "true" ]; then
+            test -n "$DOCKERHUB_USERNAME" || { echo "USE_DOCKERHUB=true but DOCKERHUB_USERNAME is missing"; exit 1; }
+            test -n "${{ secrets.DOCKERHUB_TOKEN }}" || { echo "USE_DOCKERHUB=true but DOCKERHUB_TOKEN is missing"; exit 1; }
             REGISTRY_MODE="dockerhub"
             IMAGE_REPO="$DOCKERHUB_USERNAME/${{ env.IMAGE_NAME }}"
           else
