@@ -78,10 +78,12 @@ locals {
 
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y docker.io mysql-client curl nginx
+    apt-get install -y docker.io mysql-client curl nginx amazon-ssm-agent || apt-get install -y docker.io mysql-client curl nginx
 
     systemctl enable docker
     systemctl restart docker
+    systemctl enable amazon-ssm-agent || true
+    systemctl restart amazon-ssm-agent || true
 
     usermod -aG docker ubuntu || true
 
@@ -262,6 +264,36 @@ resource "aws_key_pair" "lamp_key" {
   }
 }
 
+data "aws_iam_policy_document" "ec2_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "lamp_web_ssm_role" {
+  name               = "lamp-web-ssm-role"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+
+  tags = {
+    Name = "lamp-web-ssm-role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "lamp_web_ssm_core" {
+  role       = aws_iam_role.lamp_web_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "lamp_web_instance_profile" {
+  name = "lamp-web-instance-profile"
+  role = aws_iam_role.lamp_web_ssm_role.name
+}
+
 data "aws_ssm_parameter" "ubuntu_2404_ami" {
   name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
@@ -274,6 +306,7 @@ resource "aws_instance" "lamp_web_server" {
   vpc_security_group_ids      = [aws_security_group.lamp_web_sg.id]
   associate_public_ip_address = true
   key_name                    = aws_key_pair.lamp_key.key_name
+  iam_instance_profile        = aws_iam_instance_profile.lamp_web_instance_profile.name
   user_data                   = local.web_user_data
   user_data_replace_on_change = true
 

@@ -14,6 +14,14 @@ on:
         options:
           - "false"
           - "true"
+      use_ssm_deploy:
+        description: "Deploy via AWS SSM (no SSH required)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: read
@@ -145,8 +153,116 @@ jobs:
     needs: build
     env:
       FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_deploy == 'true' }}
+      USE_SSM_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.use_ssm_deploy || vars.USE_SSM_DEPLOY || 'false' }}
+      AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'us-east-1' }}
     steps:
+      - name: Configure AWS credentials (SSM mode)
+        if: env.USE_SSM_DEPLOY == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+
+      - name: Deploy application container via SSM
+        if: env.USE_SSM_DEPLOY == 'true'
+        env:
+          WEB_SERVER_INSTANCE_ID: ${{ secrets.WEB_SERVER_INSTANCE_ID != '' && secrets.WEB_SERVER_INSTANCE_ID || vars.WEB_SERVER_INSTANCE_ID }}
+          DB_HOST: ${{ secrets.DB_HOST != '' && secrets.DB_HOST || vars.DB_HOST }}
+          DB_NAME: ${{ secrets.DB_NAME != '' && secrets.DB_NAME || vars.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER != '' && secrets.DB_USER || vars.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD != '' && secrets.DB_PASSWORD || vars.DB_PASSWORD }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_USERNAME || vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REGISTRY_MODE: ${{ needs.build.outputs.registry_mode }}
+          IMAGE_REPO: ${{ needs.build.outputs.image_repo }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$WEB_SERVER_INSTANCE_ID" || { echo "WEB_SERVER_INSTANCE_ID is not set"; exit 1; }
+          test -n "$DB_HOST" || { echo "DB_HOST is not set"; exit 1; }
+          test -n "$DB_NAME" || { echo "DB_NAME is not set"; exit 1; }
+          test -n "$DB_USER" || { echo "DB_USER is not set"; exit 1; }
+          test -n "$DB_PASSWORD" || { echo "DB_PASSWORD is not set"; exit 1; }
+          test -n "$IMAGE_REPO" || { echo "IMAGE_REPO is not set"; exit 1; }
+          test -n "$IMAGE_TAG" || { echo "IMAGE_TAG is not set"; exit 1; }
+
+          python - <<'PY'
+          import json
+          import os
+          import shlex
+
+          image_ref = f"{os.environ['IMAGE_REPO']}:{os.environ['IMAGE_TAG']}"
+          db_host = os.environ['DB_HOST']
+          db_name = os.environ['DB_NAME']
+          db_user = os.environ['DB_USER']
+          db_password = os.environ['DB_PASSWORD']
+          registry_mode = os.environ['REGISTRY_MODE']
+          dockerhub_username = os.environ.get('DOCKERHUB_USERNAME', '')
+          dockerhub_token = os.environ.get('DOCKERHUB_TOKEN', '')
+          ghcr_username = os.environ['GHCR_USERNAME']
+          ghcr_token = os.environ['GHCR_TOKEN']
+
+          env_file = "\n".join([
+              f"DB_HOST={db_host}",
+              "DB_PORT=3306",
+              f"DB_NAME={db_name}",
+              f"DB_USER={db_user}",
+              f"DB_PASSWORD={db_password}",
+              "FLASK_ENV=production",
+          ])
+
+          if registry_mode == "dockerhub":
+              login_cmd = (
+                  f"test -n {shlex.quote(dockerhub_username)} || {{ echo 'DOCKERHUB_USERNAME is not set'; exit 1; }}; "
+                  f"test -n {shlex.quote(dockerhub_token)} || {{ echo 'DOCKERHUB_TOKEN is not set'; exit 1; }}; "
+                  f"echo {shlex.quote(dockerhub_token)} | sudo docker login -u {shlex.quote(dockerhub_username)} --password-stdin"
+              )
+          else:
+              login_cmd = (
+                  f"echo {shlex.quote(ghcr_token)} | sudo docker login ghcr.io -u {shlex.quote(ghcr_username)} --password-stdin"
+              )
+
+          commands = [
+              "set -euxo pipefail",
+              login_cmd,
+              f"sudo docker pull {shlex.quote(image_ref)}",
+              "sudo docker rm -f lamp-app || true",
+              "cat >/tmp/lamp-app.env <<'ENVEOF'\n" + env_file + "\nENVEOF",
+              "sudo mv /tmp/lamp-app.env /opt/lamp-app.env",
+              "sudo chmod 600 /opt/lamp-app.env",
+              "sudo chown root:root /opt/lamp-app.env",
+              f"sudo docker run -d --name lamp-app --restart unless-stopped -p 5000:5000 --env-file /opt/lamp-app.env {shlex.quote(image_ref)}",
+              "for attempt in 1 2 3 4 5 6; do curl -fsS http://localhost/health >/dev/null && break; if [ \"$attempt\" -eq 6 ]; then echo \"Health check failed after retries\"; sudo docker logs --tail 120 lamp-app || true; exit 1; fi; sleep 5; done",
+          ]
+
+          with open("ssm-params.json", "w", encoding="utf-8") as file:
+              json.dump({"commands": commands}, file)
+          PY
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$WEB_SERVER_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "CI deploy lamp app" \
+            --parameters file://ssm-params.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$WEB_SERVER_INSTANCE_ID" || true
+          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WEB_SERVER_INSTANCE_ID" --query "Status" --output text)
+          STDOUT=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WEB_SERVER_INSTANCE_ID" --query "StandardOutputContent" --output text)
+          STDERR=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$WEB_SERVER_INSTANCE_ID" --query "StandardErrorContent" --output text)
+
+          echo "$STDOUT"
+          if [ "$STATUS" != "Success" ]; then
+            echo "$STDERR"
+            exit 1
+          fi
+
       - name: Configure SSH key
+        if: env.USE_SSM_DEPLOY != 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -159,6 +275,7 @@ jobs:
           ssh-keyscan -T 10 -H "$WEB_SERVER_IP" >> ~/.ssh/known_hosts || true
 
       - name: Check SSH reachability
+        if: env.USE_SSM_DEPLOY != 'true'
         id: ssh_check
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
@@ -170,7 +287,7 @@ jobs:
           fi
 
       - name: Deploy application container
-        if: steps.ssh_check.outputs.reachable == 'true'
+        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable == 'true'
         env:
           EC2_USER: ${{ vars.EC2_USER != '' && vars.EC2_USER || secrets.EC2_USER }}
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
@@ -241,7 +358,7 @@ jobs:
           EOF
 
       - name: Skip deploy (SSH unreachable)
-        if: steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY != 'true'
+        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY != 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
         run: |
@@ -249,7 +366,7 @@ jobs:
           echo "Open inbound SSH on the web server security group for GitHub runner IPs or temporarily allow 0.0.0.0/0 on port 22, then rerun."
 
       - name: Fail deploy (SSH unreachable with force)
-        if: steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY == 'true'
+        if: env.USE_SSM_DEPLOY != 'true' && steps.ssh_check.outputs.reachable != 'true' && env.FORCE_DEPLOY == 'true'
         env:
           WEB_SERVER_IP: ${{ secrets.WEB_SERVER_IP != '' && secrets.WEB_SERVER_IP || vars.WEB_SERVER_IP }}
         run: |

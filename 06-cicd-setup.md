@@ -28,6 +28,28 @@ Create these in repository settings:
 - `DB_USER`
 - `DB_PASSWORD`
 
+## Optional SSM Deploy Mode (No SSH Required)
+
+If you want deployment without opening port 22 to GitHub runners, enable SSM mode.
+
+Additional repository secrets:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` (optional, only for temporary credentials)
+- `WEB_SERVER_INSTANCE_ID` (EC2 instance ID, for example `i-0123456789abcdef0`)
+
+Additional repository variables:
+
+- `AWS_REGION` (for example `us-east-1`)
+- `USE_SSM_DEPLOY=true`
+
+Notes:
+
+- The web EC2 instance must have IAM permission `AmazonSSMManagedInstanceCore`.
+- The current Terraform config now creates/attaches this to the web instance profile.
+- Manual workflow runs also expose `use_ssm_deploy` input to toggle SSM mode.
+
 Create repository variable:
 
 - `EC2_USER=ubuntu`
